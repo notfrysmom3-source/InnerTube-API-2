@@ -8,6 +8,7 @@ from fastapi import HTTPException
 from fastapi.responses import StreamingResponse
 import httpx
 from services.innertube_client import client_manager
+import logging
 from pathlib import Path
 
 from config import (
