@@ -4,11 +4,10 @@ A powerful, unlimited YouTube API wrapper
 
 Created with ❤️ by Kobir Shah 🇧🇩 (Bangladesh)
 """
-from fastapi import FastAPI, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, FileResponse
-from fastapi.middleware.cors import CORSMiddleware
-import logging
+from fastapi import HTTPException
+from fastapi.responses import StreamingResponse
+import httpx
+from services.innertube_client import client_manager
 from pathlib import Path
 
 from config import (
@@ -125,6 +124,57 @@ async def health_check():
         "version": API_VERSION,
         "service": "InnerTube API"
     }
+
+@app.get("/api/stream/{video_id}")
+async def stream_video(video_id: str, request: Request):
+    player_data = client_manager.player(video_id=video_id, client_type="ANDROID")
+    
+    formats = player_data.get("streamingData", {}).get("formats", [])
+    stream_url = None
+    
+    for fmt in formats:
+        if fmt.get("url"):
+            stream_url = fmt["url"]
+            if str(fmt.get("itag")) == "18":
+                break
+
+    if not stream_url:
+        raise HTTPException(status_code=404, detail="Stream MP4 nao encontrado")
+
+    headers = {
+        "User-Agent": "com.google.android.youtube/19.09.37 (Linux; U; Android 11) gzip"
+    }
+    if "range" in request.headers:
+        headers["Range"] = request.headers["range"]
+
+    client = httpx.AsyncClient(follow_redirects=True)
+    req = client.build_request("GET", stream_url, headers=headers)
+    r = await client.send(req, stream=True)
+
+    response_headers = {
+        "Content-Type": r.headers.get("Content-Type", "video/mp4"),
+        "Accept-Ranges": "bytes",
+        "Access-Control-Allow-Origin": "*",
+    }
+    if "Content-Length" in r.headers:
+        response_headers["Content-Length"] = r.headers["Content-Length"]
+    if "Content-Range" in r.headers:
+        response_headers["Content-Range"] = r.headers["Content-Range"]
+
+    async def iter_stream():
+        try:
+            async for chunk in r.aiter_bytes(chunk_size=65536):
+                yield chunk
+        finally:
+            await r.aclose()
+            await client.aclose()
+
+    return StreamingResponse(
+        iter_stream(),
+        status_code=r.status_code,
+        headers=response_headers,
+        media_type="video/mp4"
+    )
 
 
 @app.get("/info")
